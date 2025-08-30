@@ -1,6 +1,5 @@
 # Ignore raw and processed data
 features/
-edf_files/
 *.edf
 *.csv
 
