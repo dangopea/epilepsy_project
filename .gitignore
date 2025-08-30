@@ -1,0 +1,12 @@
+# Ignore raw data
+edf_files/
+features/
+models/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore venvs
+venv/
+.env/
