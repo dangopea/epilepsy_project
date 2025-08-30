@@ -1,9 +1,10 @@
-# Ignore raw data
-edf_files/
+# Ignore raw and processed data
 features/
-models/
+edf_files/
+*.edf
+*.csv
 
-# Ignore Python cache
+# Python cache
 __pycache__/
 *.pyc
 

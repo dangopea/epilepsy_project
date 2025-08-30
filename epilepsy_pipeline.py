@@ -2,25 +2,41 @@ import os
 import requests
 import tempfile
 import mne
-import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+import shutil
 
 # --------------------------
 # CONFIG
 # --------------------------
-BASE_URL = "https://openneuro.org/crn/datasets/ds005873/snapshots/1.1.0/files/"
-FEATURE_DIR = "features"
-os.makedirs(FEATURE_DIR, exist_ok=True)
+DATASET = "ds005873"
+VERSION = "1.1.0"
+BASE_URL = f"https://openneuro.org/crn/datasets/{DATASET}/snapshots/{VERSION}/files/"
+OUT_DIR = "features"
+WINDOW_SIZE = 30  # seconds
+os.makedirs(OUT_DIR, exist_ok=True)
 
-# Example list of EEG files (replace/extend with more as needed)
+# Example EDFs across modalities (EEG, ECG, EMG, MOV)
 edf_files = [
     "sub-001:ses-01:eeg:sub-001_ses-01_task-szMonitoring_run-01_eeg.edf",
-    "sub-001:ses-01:eeg:sub-001_ses-01_task-szMonitoring_run-02_eeg.edf"
+    "sub-001:ses-01:ecg:sub-001_ses-01_task-szMonitoring_run-01_ecg.edf",
+    "sub-001:ses-01:emg:sub-001_ses-01_task-szMonitoring_run-01_emg.edf",
+    "sub-001:ses-01:mov:sub-001_ses-01_task-szMonitoring_run-01_mov.edf"
 ]
 
 # --------------------------
-# STEP 1: Download one EDF
+# STEP 0: Clean old CSVs
+# --------------------------
+def clean_old_csvs(out_dir=OUT_DIR):
+    if os.path.exists(out_dir):
+        for f in os.listdir(out_dir):
+            if f.endswith(".csv"):
+                os.remove(os.path.join(out_dir, f))
+        print(f"[INFO] Cleaned old CSVs in {out_dir}")
+    else:
+        os.makedirs(out_dir)
+
+# --------------------------
+# STEP 1: Download EDF temporarily
 # --------------------------
 def download_temp_file(remote_path):
     url = BASE_URL + remote_path
@@ -34,48 +50,51 @@ def download_temp_file(remote_path):
     return local.name
 
 # --------------------------
-# STEP 2: Extract Features
+# STEP 2: Split into windows + Save CSVs
 # --------------------------
-def extract_features(edf_path):
+def save_windows_csv(edf_path, remote_file, out_dir=OUT_DIR, win_size=WINDOW_SIZE):
     raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
-    data, _ = raw[:, :]
-    
-    features = {}
-    features["mean"] = np.mean(data, axis=1)
-    features["var"] = np.var(data, axis=1)
+    data, times = raw[:, :]  # shape = (n_channels, n_samples)
+    sfreq = raw.info['sfreq']  # sampling frequency
 
-    # Frequency bands
-    psd, freqs = mne.time_frequency.psd_array_welch(
-        data, sfreq=raw.info['sfreq'], n_fft=512
-    )
-    bands = {"delta": (0.5, 4), "theta": (4, 8), "alpha": (8, 12),
-             "beta": (12, 30), "gamma": (30, 45)}
-    for band, (low, high) in bands.items():
-        idx = np.logical_and(freqs >= low, freqs <= high)
-        features[band] = np.mean(psd[:, idx], axis=1)
+    samples_per_win = int(sfreq * win_size)
+    total_samples = data.shape[1]
+    n_windows = total_samples // samples_per_win
 
-    feat_vector = np.concatenate([features[k] for k in features.keys()])
-    return feat_vector
+    safe_base = os.path.basename(remote_file).replace(":", "_").replace(".edf", "")
+    out_files = []
+
+    for w in range(n_windows):
+        start = w * samples_per_win
+        end = start + samples_per_win
+        segment = data[:, start:end].T
+        t_segment = times[start:end]
+
+        df = pd.DataFrame(segment, columns=raw.ch_names)
+        df.insert(0, "time_sec", t_segment)
+
+        out_file = os.path.join(out_dir, f"{safe_base}_window{w+1:04d}.csv")
+        df.to_csv(out_file, index=False)
+        out_files.append(out_file)
+
+    print(f"[INFO] Saved {len(out_files)} windows for {remote_file}")
+    return out_files
 
 # --------------------------
-# MAIN LOOP
+# MAIN
 # --------------------------
 def main():
-    X, y = [], []
+    clean_old_csvs(OUT_DIR)
+
     for remote_file in edf_files:
         local_edf = download_temp_file(remote_file)
         try:
-            feats = extract_features(local_edf)
-            X.append(feats)
-            y.append(0)  # TODO: use events.tsv to get true seizure labels
-            out_file = os.path.join(FEATURE_DIR, os.path.basename(remote_file).replace(".edf", "_features.npy"))
-            np.save(out_file, feats)
-            print(f"[INFO] Saved features → {out_file}")
+            save_windows_csv(local_edf, remote_file, OUT_DIR, WINDOW_SIZE)
+        except Exception as e:
+            print(f"[ERROR] Failed on {remote_file}: {e}")
         finally:
             os.remove(local_edf)
             print(f"[INFO] Deleted temp file {local_edf}")
-
-    print(f"[INFO] Processed {len(X)} files")
 
 if __name__ == "__main__":
     main()
