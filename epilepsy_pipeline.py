@@ -1,48 +1,37 @@
 import os
 import requests
-from tqdm import tqdm
+import tempfile
 import mne
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix
 
 # --------------------------
 # CONFIG
 # --------------------------
-BASE_URL = "https://biomedepi.github.io/seizure_detection_challenge/dataset/"
-DOWNLOAD_DIR = "edf_files"
+BASE_URL = "https://openneuro.org/crn/datasets/ds005873/snapshots/1.1.0/files/"
 FEATURE_DIR = "features"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(FEATURE_DIR, exist_ok=True)
 
-# Example dataset (replace with full list from dataset site)
+# Example list of EEG files (replace/extend with more as needed)
 edf_files = [
-    "subject1.edf",
-    "subject2.edf",
-    "subject3.edf"
+    "sub-001:ses-01:eeg:sub-001_ses-01_task-szMonitoring_run-01_eeg.edf",
+    "sub-001:ses-01:eeg:sub-001_ses-01_task-szMonitoring_run-02_eeg.edf"
 ]
 
 # --------------------------
-# STEP 1: Download EDF files
+# STEP 1: Download one EDF
 # --------------------------
-def download_file(url, folder):
-    local_path = os.path.join(folder, os.path.basename(url))
-    if os.path.exists(local_path):
-        print(f"[SKIP] Already downloaded {local_path}")
-        return local_path
-
+def download_temp_file(remote_path):
+    url = BASE_URL + remote_path
+    local = tempfile.NamedTemporaryFile(delete=False, suffix=".edf")
+    print(f"[INFO] Downloading {url}")
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
-        with open(local_path, "wb") as f, tqdm(
-            total=int(r.headers.get("content-length", 0)),
-            unit="B", unit_scale=True, desc=os.path.basename(url)
-        ) as pbar:
-            for chunk in r.iter_content(chunk_size=8192):
+        with open(local.name, "wb") as f:
+            for chunk in r.iter_content(8192):
                 f.write(chunk)
-                pbar.update(len(chunk))
-    return local_path
+    return local.name
 
 # --------------------------
 # STEP 2: Extract Features
@@ -55,7 +44,7 @@ def extract_features(edf_path):
     features["mean"] = np.mean(data, axis=1)
     features["var"] = np.var(data, axis=1)
 
-    # Frequency bands (delta, theta, alpha, beta, gamma)
+    # Frequency bands
     psd, freqs = mne.time_frequency.psd_array_welch(
         data, sfreq=raw.info['sfreq'], n_fft=512
     )
@@ -65,53 +54,28 @@ def extract_features(edf_path):
         idx = np.logical_and(freqs >= low, freqs <= high)
         features[band] = np.mean(psd[:, idx], axis=1)
 
-    # Flatten into 1D vector
     feat_vector = np.concatenate([features[k] for k in features.keys()])
     return feat_vector
 
-def process_and_save_features():
-    X, y = [], []
-    for file in edf_files:
-        url = BASE_URL + file
-        local_path = download_file(url, DOWNLOAD_DIR)
-
-        try:
-            feats = extract_features(local_path)
-            label = 1 if "seizure" in file.lower() else 0  # simple heuristic
-            X.append(feats)
-            y.append(label)
-            np.save(os.path.join(FEATURE_DIR, file.replace(".edf", "_features.npy")), feats)
-            print(f"[INFO] Extracted features from {file}")
-        except Exception as e:
-            print(f"[ERROR] Feature extraction failed for {file}: {e}")
-    return np.array(X), np.array(y)
-
 # --------------------------
-# STEP 3: Train + Evaluate Model
-# --------------------------
-def train_and_evaluate(X, y):
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42, stratify=y
-    )
-    clf = RandomForestClassifier(n_estimators=200, random_state=42)
-    clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
-
-    print("\n=== Classification Report ===")
-    print(classification_report(y_test, y_pred))
-    print("\n=== Confusion Matrix ===")
-    print(confusion_matrix(y_test, y_pred))
-
-# --------------------------
-# MAIN
+# MAIN LOOP
 # --------------------------
 def main():
-    X, y = process_and_save_features()
-    print(f"[INFO] Feature matrix shape: {X.shape}, Labels: {y.shape}")
-    if len(np.unique(y)) > 1:  # ensure at least 2 classes
-        train_and_evaluate(X, y)
-    else:
-        print("[WARNING] Only one class present in dataset subset!")
+    X, y = [], []
+    for remote_file in edf_files:
+        local_edf = download_temp_file(remote_file)
+        try:
+            feats = extract_features(local_edf)
+            X.append(feats)
+            y.append(0)  # TODO: use events.tsv to get true seizure labels
+            out_file = os.path.join(FEATURE_DIR, os.path.basename(remote_file).replace(".edf", "_features.npy"))
+            np.save(out_file, feats)
+            print(f"[INFO] Saved features → {out_file}")
+        finally:
+            os.remove(local_edf)
+            print(f"[INFO] Deleted temp file {local_edf}")
+
+    print(f"[INFO] Processed {len(X)} files")
 
 if __name__ == "__main__":
     main()
