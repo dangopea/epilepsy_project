@@ -1,12 +1,25 @@
 # Ignore raw and processed data
 features/
+edf_files/
 *.edf
 *.csv
 
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Ignore venvs
+# Virtual environments
 venv/
 .env/
+.venv/
+env/
+ENV/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
